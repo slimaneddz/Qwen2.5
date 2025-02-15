@@ -1,0 +1,130 @@
+import numpy as np
+import matplotlib.pyplot as plt
+
+# Material properties
+E1 = 11.8e9  # Young's modulus in Pa
+E2 = 5.89e9  # Young's modulus in Pa
+G12 = 0.69e9  # Shear modulus in Pa
+nu12 = 0.071  # Poisson's ratio
+
+# Applied stress
+sigma = 10e6  # Applied stress in Pa (10 MPa)
+
+# Geometry
+R = 1.0  # Radius of the hole
+L = 9 * R  # Edge length of the square plate
+
+# Discretization
+num_elements_outer = 28
+num_elements_hole = 18
+num_elements_total = num_elements_outer + num_elements_hole
+
+# Boundary element nodes and normals
+theta_outer = np.linspace(0, 360, num_elements_outer, endpoint=False)  # Angles in degrees
+theta_hole = np.linspace(0, 360, num_elements_hole, endpoint=False)  # Angles in degrees
+
+# Convert degrees to radians for calculations
+theta_outer_rad = np.deg2rad(theta_outer)
+theta_hole_rad = np.deg2rad(theta_hole)
+
+nodes_outer = np.array([L/2 * np.cos(theta_outer_rad), L/2 * np.sin(theta_outer_rad)]).T
+nodes_hole = np.array([R * np.cos(theta_hole_rad), R * np.sin(theta_hole_rad)]).T
+
+nodes = np.vstack((nodes_outer, nodes_hole))
+normals = np.vstack((np.array([np.cos(theta_outer_rad), np.sin(theta_outer_rad)]).T,
+                     np.array([-np.cos(theta_hole_rad), -np.sin(theta_hole_rad)]).T))
+
+# Small epsilon to avoid division by zero
+eps = 1e-10
+
+# Fundamental solution (Kelvin's solution)
+def kelvin_solution(xi, xj, nu, mu):
+    r_vec = xi - xj
+    r = np.linalg.norm(r_vec) + eps  # Add epsilon to avoid division by zero
+    if r < eps:
+        # Handle singularity at r = 0 (self-influence term)
+        return np.zeros((2, 2))  # Self-influence term is zero for displacement kernel
+    U = 1 / (8 * np.pi * mu * (1 - nu)) * (-(3 - 4 * nu) * np.log(r) * np.eye(2) + np.outer(r_vec, r_vec) / r**2)
+    return U
+
+# Traction kernel
+def traction_kernel(xi, xj, nu, mu, n):
+    r_vec = xi - xj
+    r = np.linalg.norm(r_vec) + eps  # Add epsilon to avoid division by zero
+    if r < eps:
+        # Handle singularity at r = 0 (self-influence term)
+        return np.zeros(2)  # Self-influence term is zero for traction kernel
+    T = 1 / (np.pi * r**2) * ((1 - 2 * nu) * np.eye(2) + 2 * np.outer(r_vec, r_vec) / r**2)
+    return T @ n
+
+# Boundary integral equation
+def boundary_integral_equation(nodes, normals, nu, mu):
+    num_nodes = len(nodes)
+    A = np.zeros((2 * num_nodes, 2 * num_nodes))
+    b = np.zeros(2 * num_nodes)
+
+    for i in range(num_nodes):
+        xi = nodes[i]
+        ni = normals[i]
+        for j in range(num_nodes):
+            xj = nodes[j]
+            nj = normals[j]
+            U = kelvin_solution(xi, xj, nu, mu)
+            T = traction_kernel(xi, xj, nu, mu, nj)
+            A[2*i:2*i+2, 2*j:2*j+2] = U
+            b[2*i:2*i+2] += T @ np.array([1, 0])  # Assuming unit traction in x-direction
+
+    return A, b
+
+# Solve the boundary integral equation
+A, b = boundary_integral_equation(nodes, normals, nu12, G12)
+u = np.linalg.solve(A, b)
+
+# Post-process to get circumferential stress
+sigma_theta = np.zeros(num_elements_total)
+for i in range(num_elements_total):
+    xi = nodes[i]
+    ni = normals[i]
+    sigma_theta[i] = np.dot(u[2*i:2*i+2], ni)
+
+# Analytical solution for circumferential stress around the hole
+def analytical_sigma_theta(theta_deg):
+    # Convert degrees to radians for calculations
+    theta = np.deg2rad(theta_deg)
+    
+    # Classical solution for stress around a hole in an infinite plate under uniaxial tension
+    return sigma * (1 + 2 * np.cos(2 * theta))
+
+# Plot the analytical solution independently
+theta_deg = np.linspace(0, 360, 100)  # Angles in degrees for plotting
+sigma_theta_analytical = [analytical_sigma_theta(t) for t in theta_deg]
+
+plt.figure()
+plt.plot(theta_deg, sigma_theta_analytical, label='Analytical Solution (Hole)')
+plt.xlabel('Theta (°)')
+plt.ylabel('Circumferential Stress (Pa)')
+plt.legend()
+plt.title('Analytical Solution (Independent Plot)')
+plt.grid(True)
+plt.show()
+
+# Plot the BEM solution independently
+plt.figure()
+plt.plot(theta_hole, sigma_theta[num_elements_outer:], 'x', label='BEM (Hole)')
+plt.xlabel('Theta (°)')
+plt.ylabel('Circumferential Stress (Pa)')
+plt.legend()
+plt.title('BEM Solution (Independent Plot)')
+plt.grid(True)
+plt.show()
+
+# Combine both solutions in one plot
+plt.figure()
+plt.plot(theta_deg, sigma_theta_analytical, label='Analytical Solution (Hole Only)')
+plt.plot(theta_hole, sigma_theta[num_elements_outer:], 'x', label='BEM (Hole)')
+plt.xlabel('Theta (°)')
+plt.ylabel('Circumferential Stress (Pa)')
+plt.legend()
+plt.title('Circumferential Stress Distribution (BEM vs Analytical)')
+plt.grid(True)
+plt.show()
